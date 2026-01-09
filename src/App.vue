@@ -128,7 +128,7 @@ function toggleDetector() {
               </svg>
             </div>
             <h2>欢迎使用MOYU浏览器</h2>
-            <p>在上方地址栏输入网址开始摸鱼，或者试试以下热门网站</p>
+            <p>在上方地址栏输入网址开始摸鱼，点击悬浮球打开摸鱼助手开始检测!</p>
             <div class="quick-links">
               <button v-for="link in quickLinks" :key="link.url" @click="urlInput = link.url; navigate()" class="link-card">
                 <span>{{ link.name }}</span>
@@ -249,8 +249,8 @@ function toggleDetector() {
 
 .empty-state {
   width: 100%;
-  min-height: calc(100vh);
-  /* 减去导航栏高度 */
+  height: 100%;
+  min-height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;

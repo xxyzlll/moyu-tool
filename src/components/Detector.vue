@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import * as tf from '@tensorflow/tfjs'
 import * as cocoSsd from '@tensorflow-models/coco-ssd'
 
@@ -23,6 +23,7 @@ let model = null
 let running = false
 let modelLoaded = false
 let videoReady = false
+let currentStream = null // 保存当前视频流引用
 
 // 防误报参数
 let consecutiveCount = 0
@@ -47,6 +48,22 @@ function logStatus(s) {
   log(s)
 }
 
+// 关闭摄像头
+function closeCamera() {
+  if (currentStream) {
+    // 停止所有轨道
+    currentStream.getTracks().forEach(track => {
+      track.stop()
+    })
+    currentStream = null
+  }
+  if (video.value) {
+    video.value.srcObject = null
+  }
+  videoReady = false
+  log('摄像头已关闭')
+}
+
 // 初始化摄像头（请求小分辨率）
 async function setupCamera() {
   try {
@@ -55,6 +72,7 @@ async function setupCamera() {
       video: { width: 160, height: 120 },
       audio: false
     })
+    currentStream = stream // 保存流引用
     video.value.srcObject = stream
 
     // 等待 metadata/loadeddata 以确保 videoWidth/videoHeight 可用
@@ -240,6 +258,7 @@ async function startDetection() {
 
 function stopDetection() {
   running = false
+  closeCamera() // 关闭摄像头
   logStatus('已停止检测')
 }
 
@@ -248,6 +267,12 @@ onMounted(() => {
       ctx = overlay.value.getContext('2d')
   }
   log('等待用户点击开始检测...')
+})
+
+onUnmounted(() => {
+  // 组件卸载时关闭摄像头
+  running = false
+  closeCamera()
 })
 </script>
 
