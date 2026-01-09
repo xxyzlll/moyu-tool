@@ -1,5 +1,5 @@
 {
-  "name": "moyu-electron-faceapi",
+  "name": "MOYU",
   "version": "0.1.0",
   "description": "的",
   "main": "main.js",
@@ -7,6 +7,22 @@
     "dev": "concurrently \"vite\" \"wait-on tcp:5173 && cross-env NODE_ENV=development electron .\"",
     "build": "vite build && electron-builder",
     "preview": "vite preview"
+  },
+  "build": {
+    "appId": "com.moyu.app",
+    "files": [
+      "dist/**/*",
+      "main.js",
+      "preload.js",
+      "assets/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "mac": {
+      "target": "dmg"
+    }
   },
   "author": "",
   "license": "MIT",
