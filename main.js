@@ -14,7 +14,8 @@ function createMainWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      enableRemoteModule: false
+      enableRemoteModule: false,
+      webviewTag: true
     }
   });
 

@@ -1,491 +1,324 @@
 <script setup>
-import { ref, onMounted } from 'vue'
-import * as tf from '@tensorflow/tfjs'
-import * as cocoSsd from '@tensorflow-models/coco-ssd'
+import { ref } from 'vue'
+import Detector from './components/Detector.vue'
 
-// 响应式数据
-const interval = ref(500)
-const peopleThreshold = ref(2)
-const minScore = ref(50) // 置信度阈值
-const status = ref('状态：未启动')
-const peopleCount = ref(0)
-const rawCount = ref(0)
-const debugLog = ref('')
+// 浏览器相关状态
+const urlInput = ref('https://www.baidu.com')
+const webviewSrc = ref(null)
+const webviewRef = ref(null)
+const isLoading = ref(false)
 
-// 引用
-const video = ref(null)
-const overlay = ref(null)
-const debugLogEl = ref(null)
-let ctx = null
-let model = null
+// 弹窗状态
+const showDetector = ref(false)
 
-// 内部状态
-let running = false
-let modelLoaded = false
-let videoReady = false
-
-// 防误报参数
-let consecutiveCount = 0
-const consecutiveThreshold = 2
-let lastAlertTime = 0
-const alertCooldown = 3000 // ms
-
-// 安全页面状态跟踪
-let safeWindowOpen = false
-let safeCloseCount = 0
-let lastCloseTime = 0
-const closeCooldown = 3000 // ms
-
-// 简单日志
-function log(msg) {
-  const t = new Date().toISOString().slice(11,23)
-  debugLog.value = `[${t}] ${msg}\n` + debugLog.value
+// 导航方法
+function navigate() {
+  let url = urlInput.value
+  if (!url.startsWith('http')) {
+    url = 'https://' + url
+  }
+  webviewSrc.value = url
 }
 
-function logStatus(s) {
-  status.value = '状态：' + s
-  log(s)
-}
-
-// 初始化摄像头（请求小分辨率）
-async function setupCamera() {
-  try {
-    logStatus('请求摄像头 160x120...')
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: 160, height: 120 },
-      audio: false
-    })
-    video.value.srcObject = stream
-
-    // 等待 metadata/loadeddata 以确保 videoWidth/videoHeight 可用
-    await new Promise((resolve) => {
-      const onLoaded = () => {
-        video.value.removeEventListener('loadeddata', onLoaded)
-        setTimeout(() => resolve(), 50)
-      }
-      video.value.addEventListener('loadeddata', onLoaded)
-      // 超时保护
-      setTimeout(() => {
-        resolve()
-      }, 2000)
-    })
-
-    // 同步 canvas 尺寸
-    overlay.value.width = video.value.videoWidth || 160
-    overlay.value.height = video.value.videoHeight || 120
-    videoReady = true
-    logStatus(`摄像头已就绪: ${overlay.value.width}x${overlay.value.height}`)
-    return true
-  } catch (e) {
-    console.error('无法打开摄像头', e)
-    logStatus('无法打开摄像头: ' + e.message)
-    return false
+function goBack() {
+  if (webviewRef.value && webviewRef.value.canGoBack()) {
+    webviewRef.value.goBack()
   }
 }
 
-// 加载 COCO-SSD 模型
-async function loadModel() {
-  try {
-    logStatus('开始加载 COCO-SSD 模型...')
-    await tf.ready()
-    // 加载模型，默认使用 'lite_mobilenet_v2'，比较轻量
-    model = await cocoSsd.load({ base: 'lite_mobilenet_v2' })
-    modelLoaded = true
-    logStatus('模型加载成功')
-  } catch (e) {
-    modelLoaded = false
-    console.error('加载模型失败', e)
-    logStatus('加载模型失败: ' + (e.message || e))
-    throw e
+function goForward() {
+  if (webviewRef.value && webviewRef.value.canGoForward()) {
+    webviewRef.value.goForward()
   }
 }
 
-// 主检测循环
-async function detectLoop() {
-  if (!running) {
-    log('detectLoop 停止（running=false）')
-    return
+function reload() {
+  if (webviewRef.value) {
+    webviewRef.value.reload()
   }
-  if (!modelLoaded) {
-    log('detectLoop 等待：模型未加载')
-    setTimeout(detectLoop, 500)
-    return
-  }
-  if (!videoReady) {
-    log('detectLoop 等待：视频未就绪')
-    setTimeout(detectLoop, 500)
-    return
-  }
-
-  const intervalVal = parseInt(interval.value) || 500
-  
-  try {
-    if (video.value.readyState < 2) {
-      log('视频未就绪，跳过本次检测')
-      setTimeout(detectLoop, intervalVal)
-      return
-    }
-
-    // 检测对象
-    const predictions = await model.detect(video.value)
-    
-    ctx.clearRect(0, 0, overlay.value.width, overlay.value.height)
-
-    // 过滤 'person' 类别
-    const scoreThreshold = (parseFloat(minScore.value) || 50) / 100
-    const persons = predictions.filter(p => p.class === 'person' && p.score >= scoreThreshold)
-    
-    // 绘制框
-    ctx.strokeStyle = '#00b894'
-    ctx.lineWidth = 2
-    ctx.font = '12px Arial'
-    ctx.fillStyle = '#00b894'
-
-    persons.forEach(p => {
-      // bbox: [x, y, width, height]
-      const [x, y, width, height] = p.bbox
-      ctx.strokeRect(x, y, width, height)
-      ctx.fillText(`${Math.round(p.score * 100)}%`, x, y > 10 ? y - 5 : 10)
-    })
-
-    rawCount.value = predictions.length // 所有检测到的物体
-    peopleCount.value = persons.length  // 仅人
-    
-    // 判定逻辑
-    const threshold = parseInt(peopleThreshold.value) || 1
-    const danger = persons.length >= threshold
-
-    if (danger) {
-      consecutiveCount++
-    } else {
-      consecutiveCount = 0
-    }
-
-    if (!danger) {
-      safeCloseCount++
-    } else {
-      safeCloseCount = 0
-    }
-
-    if (consecutiveCount >= consecutiveThreshold && (Date.now() - lastAlertTime) > alertCooldown) {
-      lastAlertTime = Date.now()
-      consecutiveCount = 0
-      safeWindowOpen = true
-      log('触发切屏：发送 showSafe IPC')
-      try {
-        if (window.moyuAPI && typeof window.moyuAPI.showSafe === 'function') {
-          window.moyuAPI.showSafe()
-          logStatus('检测到他人 -> 已切屏（无声）')
-        } else {
-          logStatus('检测到他人（本地 API 未暴露）')
-        }
-      } catch (e) {
-        console.error('调用 showSafe 失败', e)
-        logStatus('调用 showSafe 失败: ' + e.message)
-      }
-    } 
-    else if (safeCloseCount >= consecutiveThreshold && safeWindowOpen && (Date.now() - lastCloseTime) > closeCooldown) {
-      lastCloseTime = Date.now()
-      safeCloseCount = 0
-      safeWindowOpen = false
-      log('触发关闭安全页面：发送 hideSafe IPC')
-      try {
-        if (window.moyuAPI && typeof window.moyuAPI.hideSafe === 'function') {
-          window.moyuAPI.hideSafe()
-          logStatus('画面无人 -> 已关闭安全页面')
-        } else {
-          logStatus('画面无人（本地 API 未暴露）')
-        }
-      } catch (e) {
-        console.error('调用 hideSafe 失败', e)
-        logStatus('调用 hideSafe 失败: ' + e.message)
-      }
-    }
-  } catch (e) {
-    console.error('detectLoop 错误', e)
-    logStatus('检测错误: ' + (e.message || e))
-  }
-
-  setTimeout(detectLoop, intervalVal)
 }
 
-async function startDetection() {
-  if (running) return
-  
-  log('开始点击：setupCamera -> loadModel -> start loop')
-  const ok = await setupCamera()
-  if (!ok) {
-    logStatus('摄像头初始化失败，无法启动检测')
-    return
-  }
-
-  if (!modelLoaded) {
-    try {
-      await loadModel()
-    } catch (e) {
-      logStatus('模型加载失败，停止启动')
-      return
-    }
-  }
-
-  if (!videoReady || !modelLoaded) {
-    logStatus('启动失败：视频或模型未就绪')
-    return
-  }
-
-  running = true
-  logStatus('开始检测...')
-  detectLoop()
+// 监听 webview 事件
+function onDomReady() {
+  // Webview DOM ready
 }
 
-function stopDetection() {
-  running = false
-  logStatus('已停止检测')
+function onDidStartLoading() {
+  isLoading.value = true
 }
 
-onMounted(() => {
-  if(overlay.value) {
-      ctx = overlay.value.getContext('2d')
+function onDidStopLoading() {
+  isLoading.value = false
+  // 更新地址栏
+  if (webviewRef.value) {
+    urlInput.value = webviewRef.value.getURL()
   }
-  log('等待用户点击开始检测...')
-})
+}
+
+// 切换检测器弹窗
+function toggleDetector() {
+  showDetector.value = !showDetector.value
+}
 </script>
 
 <template>
-  <div class="container">
-    <header>
-      <h2>🐟 摸摸鱼</h2>
-      <div class="status-badge" :class="{ active: running }">{{ status }}</div>
-    </header>
-
-    <main>
-      <div class="video-card">
-        <div class="video-wrapper">
-          <video ref="video" autoplay muted playsinline></video>
-          <canvas ref="overlay"></canvas>
-        </div>
-        <div class="people-info">
-            <div class="stat-item">
-                <span class="label">检测人数</span>
-                <span class="value" :class="{ danger: peopleCount >= (parseInt(peopleThreshold) || 1) }">{{ peopleCount }}</span>
-            </div>
-            <div class="stat-item">
-                <span class="label">Objects</span>
-                <span class="value">{{ rawCount }}</span>
-            </div>
-        </div>
+  <div class="app-container">
+    <!-- 浏览器顶部导航栏 -->
+    <div class="browser-bar">
+      <div class="nav-buttons">
+        <button @click="goBack" title="后退">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <button @click="goForward" title="前进">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </button>
+        <button @click="reload" title="刷新">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        </button>
       </div>
-
-      <div class="controls-card">
-        <div class="control-group">
-          <label>
-            <span>检测间隔 (ms)</span>
-            <input v-model="interval" type="number" />
-          </label>
-          <label>
-            <span>人数阈值</span>
-            <input v-model="peopleThreshold" type="number" />
-          </label>
-          <label>
-            <span>置信度 (%)</span>
-            <input v-model="minScore" type="number" />
-          </label>
-        </div>
-        
-        <div class="action-buttons">
-          <button class="btn primary" @click="startDetection" :disabled="running">开始检测</button>
-          <button class="btn danger" @click="stopDetection" :disabled="!running">停止检测</button>
-        </div>
-      </div>
-    </main>
-    
-    <div class="debug-panel">
-        <h3>调试日志</h3>
-        <pre ref="debugLogEl">{{ debugLog }}</pre>
+      
+      <form @submit.prevent="navigate" class="url-form">
+        <input 
+          v-model="urlInput" 
+          type="text" 
+          placeholder="输入网址..."
+          class="url-input"
+        />
+        <button type="submit" class="go-btn">进入</button>
+      </form>
     </div>
+
+    <!-- Webview 区域 -->
+    <div class="webview-container">
+      <webview 
+       v-if="webviewSrc"
+        ref="webviewRef"
+        :src="webviewSrc" 
+        class="webview"
+        allowpopups
+        @dom-ready="onDomReady"
+        @did-start-loading="onDidStartLoading"
+        @did-stop-loading="onDidStopLoading"
+      ></webview>
+      <div v-else class="empty-state">
+        <div class="empty-content">
+          <div class="icon-wrapper">
+            <svg viewBox="0 0 24 24" width="64" height="64" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="2" y1="12" x2="22" y2="12"></line>
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+            </svg>
+          </div>
+          <h2>欢迎使用MOYU浏览器</h2>
+          <p>在上方地址栏输入网址开始摸鱼，或者试试以下热门网站</p>
+          <div class="quick-links">
+            <button @click="urlInput = 'https://www.baidu.com'; navigate()" class="link-card">
+              <span>百度一下</span>
+            </button>
+            <button @click="urlInput = 'https://www.bilibili.com'; navigate()" class="link-card">
+              <span>Bilibili</span>
+            </button>
+            <button @click="urlInput = 'https://github.com'; navigate()" class="link-card">
+              <span>GitHub</span>
+            </button>
+            <button @click="urlInput = 'https://v3.cn.vuejs.org'; navigate()" class="link-card">
+              <span>Vue.js</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 悬浮球 -->
+    <button class="fab" @click="toggleDetector" title="打开摸鱼助手">
+      🐟
+    </button>
+
+    <!-- 弹窗遮罩层 -->
+    <div v-show="showDetector" class="modal-overlay" @click.self="showDetector = false">
+      <div class="modal-content">
+        <button class="close-btn" @click="showDetector = false">×</button>
+        <!-- 即使隐藏，Detector 组件依然保持挂载和运行 -->
+        <Detector />
+      </div>
+    </div>
+    
+    <!-- 即使不显示弹窗，Detector 组件也必须在 DOM 中运行检测逻辑 -->
+    <!-- 我们使用 v-show="false" 的方式将其隐藏在背景中，或者将其渲染在一个不可见的容器里 -->
+    <!-- 上面的 modal-content 是弹窗显示的位置。为了保证 Detector 一直运行，我们不能用 v-if -->
+    <!-- 这里的逻辑是：Detector 始终渲染在 Modal Content 里，Modal 本身通过 v-show 控制显隐 -->
   </div>
 </template>
 
 <style scoped>
-.container {
-  max-width: 800px;
-  margin: 0 auto;
-  padding: 20px;
-  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-  color: #333;
-}
-
-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-  border-bottom: 2px solid #eee;
-  padding-bottom: 10px;
-}
-
-h2 {
-  margin: 0;
-  color: #2c3e50;
-  font-size: 24px;
-}
-
-.status-badge {
-  padding: 5px 10px;
-  border-radius: 4px;
-  background: #eee;
-  font-size: 14px;
-  font-weight: bold;
-}
-.status-badge.active {
-  background: #e6fffa;
-  color: #00b894;
-  border: 1px solid #00b894;
-}
-
-main {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
-  margin-bottom: 20px;
-}
-
-.video-card {
-  background: #fff;
-  border-radius: 8px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.1);
-  padding: 15px;
+.app-container {
   display: flex;
   flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  background: #fff;
+}
+
+.browser-bar {
+  display: flex;
   align-items: center;
+  padding: 8px 12px;
+  background: #f5f5f5;
+  border-bottom: 1px solid #ddd;
+  gap: 12px;
+  height: 50px;
 }
 
-.video-wrapper {
-  position: relative;
-  width: 160px;
-  height: 120px;
-  background: #000;
+.nav-buttons {
+  display: flex;
+  gap: 4px;
+}
+
+.nav-buttons button {
+  background: transparent;
+  border: none;
+  padding: 6px;
   border-radius: 4px;
-  overflow: hidden;
-  margin-bottom: 15px;
+  cursor: pointer;
+  color: #555;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-video, canvas {
-  position: absolute;
+.nav-buttons button:hover {
+  background: #e0e0e0;
+}
+
+.url-form {
+  flex: 1;
+  display: flex;
+  gap: 8px;
+}
+
+.url-input {
+  flex: 1;
+  padding: 6px 12px;
+  border: 1px solid #ccc;
+  border-radius: 20px;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.url-input:focus {
+  border-color: #3498db;
+}
+
+.go-btn {
+  padding: 0 16px;
+  background: #3498db;
+  color: white;
+  border: none;
+  border-radius: 20px;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.go-btn:hover {
+  background: #2980b9;
+}
+
+.webview-container {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.webview {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+/* 悬浮球 */
+.fab {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: #3498db;
+  color: white;
+  border: none;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  font-size: 24px;
+  cursor: pointer;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s, background 0.2s;
+}
+
+.fab:hover {
+  transform: scale(1.1);
+  background: #2980b9;
+}
+
+.fab:active {
+  transform: scale(0.95);
+}
+
+/* 弹窗 */
+.modal-overlay {
+  position: fixed;
   top: 0;
   left: 0;
   width: 100%;
   height: 100%;
-}
-
-.people-info {
+  background: rgba(0,0,0,0.5);
   display: flex;
-  gap: 20px;
-  width: 100%;
-  justify-content: space-around;
-}
-
-.stat-item {
-  display: flex;
-  flex-direction: column;
   align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  backdrop-filter: blur(2px);
 }
 
-.stat-item .label {
-  font-size: 12px;
-  color: #666;
+.modal-content {
+  position: relative;
+  width: 90%;
+  max-width: 800px;
+  height: 80%;
+  max-height: 700px;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+  overflow: hidden;
+  animation: modalPop 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
 
-.stat-item .value {
-  font-size: 24px;
-  font-weight: bold;
-}
-
-.stat-item .value.danger {
-  color: #ff4757;
-}
-
-.controls-card {
-  background: #fff;
-  border-radius: 8px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.1);
-  padding: 15px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-}
-
-.control-group {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.control-group label {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 14px;
-}
-
-.control-group input {
-  width: 60px;
-  padding: 4px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-}
-
-.action-buttons {
-  display: flex;
-  gap: 10px;
-  margin-top: 20px;
-}
-
-.btn {
-  flex: 1;
-  padding: 8px 15px;
+.close-btn {
+  position: absolute;
+  top: 10px;
+  right: 15px;
+  background: transparent;
   border: none;
-  border-radius: 4px;
+  font-size: 28px;
+  color: #888;
   cursor: pointer;
-  font-weight: bold;
-  transition: opacity 0.2s;
-}
-.btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+  z-index: 10;
+  line-height: 1;
 }
 
-.btn.primary {
-  background: #3498db;
-  color: white;
-}
-.btn.danger {
-  background: #e74c3c;
-  color: white;
+.close-btn:hover {
+  color: #333;
 }
 
-.debug-panel {
-  background: #f8f9fa;
-  border-radius: 8px;
-  padding: 15px;
-  border: 1px solid #eee;
-}
-
-.debug-panel h3 {
-  margin-top: 0;
-  font-size: 16px;
-  margin-bottom: 10px;
-}
-
-pre {
-  background: #fff;
-  padding: 10px;
-  border: 1px solid #eee;
-  border-radius: 4px;
-  max-height: 150px;
-  overflow-y: auto;
-  font-size: 12px;
-  white-space: pre-wrap;
-  word-wrap: break-word;
+@keyframes modalPop {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 </style>
