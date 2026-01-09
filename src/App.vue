@@ -1,10 +1,12 @@
 <script setup>
 import { ref, onMounted } from 'vue'
+import * as tf from '@tensorflow/tfjs'
+import * as cocoSsd from '@tensorflow-models/coco-ssd'
 
 // 响应式数据
 const interval = ref(500)
 const peopleThreshold = ref(2)
-const minFaceRatio = ref(8)
+const minScore = ref(50) // 置信度阈值
 const status = ref('状态：未启动')
 const peopleCount = ref(0)
 const rawCount = ref(0)
@@ -15,6 +17,7 @@ const video = ref(null)
 const overlay = ref(null)
 const debugLogEl = ref(null)
 let ctx = null
+let model = null
 
 // 内部状态
 let running = false
@@ -23,7 +26,7 @@ let videoReady = false
 
 // 防误报参数
 let consecutiveCount = 0
-const consecutiveThreshold = 1
+const consecutiveThreshold = 2
 let lastAlertTime = 0
 const alertCooldown = 3000 // ms
 
@@ -44,31 +47,6 @@ function logStatus(s) {
   log(s)
 }
 
-// 等待库加载完成
-function waitForLibraries() {
-  return new Promise((resolve) => {
-    if (window.tf && window.faceapi) {
-      resolve()
-    } else {
-      const checkInterval = setInterval(() => {
-        if (window.tf && window.faceapi) {
-          clearInterval(checkInterval)
-          resolve()
-        }
-      }, 50)
-      // 超时保护
-      setTimeout(() => {
-        clearInterval(checkInterval)
-        if (window.tf && window.faceapi) {
-          resolve()
-        } else {
-          log('库加载超时：tf=' + !!window.tf + ', faceapi=' + !!window.faceapi)
-        }
-      }, 5000)
-    }
-  })
-}
-
 // 初始化摄像头（请求小分辨率）
 async function setupCamera() {
   try {
@@ -83,18 +61,16 @@ async function setupCamera() {
     await new Promise((resolve) => {
       const onLoaded = () => {
         video.value.removeEventListener('loadeddata', onLoaded)
-        // 若 videoWidth/Height 仍为 0，等待短时间
         setTimeout(() => resolve(), 50)
       }
       video.value.addEventListener('loadeddata', onLoaded)
       // 超时保护
       setTimeout(() => {
-        // 如果还没触发 loadeddata，仍 resolve（后续有保护）
         resolve()
       }, 2000)
     })
 
-    // 同步 canvas 尺寸（如果为 0，就使用 160/120 默认值）
+    // 同步 canvas 尺寸
     overlay.value.width = video.value.videoWidth || 160
     overlay.value.height = video.value.videoHeight || 120
     videoReady = true
@@ -107,12 +83,13 @@ async function setupCamera() {
   }
 }
 
-// 加载 face-api 模型（必须）
+// 加载 COCO-SSD 模型
 async function loadModel() {
   try {
-    logStatus('开始加载 TinyFaceDetector 模型（从 ./face-models）...')
-    // 使用相对路径，确保在 dev 和 prod (dist) 下都能找到
-    await window.faceapi.nets.tinyFaceDetector.loadFromUri('./face-models') 
+    logStatus('开始加载 COCO-SSD 模型...')
+    await tf.ready()
+    // 加载模型，默认使用 'lite_mobilenet_v2'，比较轻量
+    model = await cocoSsd.load({ base: 'lite_mobilenet_v2' })
     modelLoaded = true
     logStatus('模型加载成功')
   } catch (e) {
@@ -141,11 +118,7 @@ async function detectLoop() {
   }
 
   const intervalVal = parseInt(interval.value) || 500
-  const options = new window.faceapi.TinyFaceDetectorOptions({
-    inputSize: 128,
-    scoreThreshold: 0.5
-  })
-
+  
   try {
     if (video.value.readyState < 2) {
       log('视频未就绪，跳过本次检测')
@@ -153,41 +126,34 @@ async function detectLoop() {
       return
     }
 
-    // const t0 = performance.now()
-    const detections = await window.faceapi.detectAllFaces(video.value, options)
-    // const t1 = performance.now()
-    // log(`detectAllFaces 返回 ${detections.length} 个人脸 (耗时 ${(t1-t0).toFixed(1)}ms)`)
-
+    // 检测对象
+    const predictions = await model.detect(video.value)
+    
     ctx.clearRect(0, 0, overlay.value.width, overlay.value.height)
 
-    const minFaceRatioVal = (parseFloat(minFaceRatio.value) || 8) / 100
-    const validFaces = detections.filter(d => {
-      if (!d.box || typeof d.box.height !== 'number') {
-        return false
-      }
-      if (!overlay.value.height) return true
-      const faceRatio = d.box.height / overlay.value.height
-      const isValid = faceRatio >= minFaceRatioVal
-      if (!isValid) {
-        // log(`人脸太小被过滤: height=${d.box.height.toFixed(1)}, ratio=${(faceRatio*100).toFixed(1)}%`)
-      }
-      return isValid
-    })
-
-    ctx.strokeStyle = 'red'
-    ctx.lineWidth = 1.2
-    validFaces.forEach(d => {
-      if (d.box) ctx.strokeRect(d.box.x, d.box.y, d.box.width, d.box.height)
-    })
-
-    rawCount.value = detections.length
-    peopleCount.value = validFaces.length
+    // 过滤 'person' 类别
+    const scoreThreshold = (parseFloat(minScore.value) || 50) / 100
+    const persons = predictions.filter(p => p.class === 'person' && p.score >= scoreThreshold)
     
-    // 如果设置阈值为1，意味着检测到1个人就危险（通常用于无人值守或者不能有任何人的情况）
-    // 如果设置阈值为2，意味着检测到2个人才危险（通常用于自己一直在画面中，多出一个人时报警）
-    // 所以逻辑应该是：检测人数 >= 阈值
+    // 绘制框
+    ctx.strokeStyle = '#00b894'
+    ctx.lineWidth = 2
+    ctx.font = '12px Arial'
+    ctx.fillStyle = '#00b894'
+
+    persons.forEach(p => {
+      // bbox: [x, y, width, height]
+      const [x, y, width, height] = p.bbox
+      ctx.strokeRect(x, y, width, height)
+      ctx.fillText(`${Math.round(p.score * 100)}%`, x, y > 10 ? y - 5 : 10)
+    })
+
+    rawCount.value = predictions.length // 所有检测到的物体
+    peopleCount.value = persons.length  // 仅人
+    
+    // 判定逻辑
     const threshold = parseInt(peopleThreshold.value) || 1
-    const danger = validFaces.length >= threshold
+    const danger = persons.length >= threshold
 
     if (danger) {
       consecutiveCount++
@@ -234,10 +200,6 @@ async function detectLoop() {
         console.error('调用 hideSafe 失败', e)
         logStatus('调用 hideSafe 失败: ' + e.message)
       }
-    } else {
-      if (!danger) {
-         // logStatus('正常，未检测到他人')
-      }
     }
   } catch (e) {
     console.error('detectLoop 错误', e)
@@ -249,17 +211,6 @@ async function detectLoop() {
 
 async function startDetection() {
   if (running) return
-  
-  try {
-    await waitForLibraries()
-    if (!window.tf || !window.faceapi) {
-      logStatus('库未加载完成，请刷新页面重试')
-      return
-    }
-  } catch (e) {
-    logStatus('库加载失败: ' + e.message)
-    return
-  }
   
   log('开始点击：setupCamera -> loadModel -> start loop')
   const ok = await setupCamera()
@@ -296,20 +247,14 @@ onMounted(() => {
   if(overlay.value) {
       ctx = overlay.value.getContext('2d')
   }
-  
-  waitForLibraries().then(() => {
-    log('库加载完成')
-  }).catch(e => {
-    console.error('等待库加载失败', e)
-    log('等待库加载失败: ' + e.message)
-  })
+  log('等待用户点击开始检测...')
 })
 </script>
 
 <template>
   <div class="container">
     <header>
-      <h2>workspace tool</h2>
+      <h2>🐟 摸摸鱼</h2>
       <div class="status-badge" :class="{ active: running }">{{ status }}</div>
     </header>
 
@@ -325,7 +270,7 @@ onMounted(() => {
                 <span class="value" :class="{ danger: peopleCount >= (parseInt(peopleThreshold) || 1) }">{{ peopleCount }}</span>
             </div>
             <div class="stat-item">
-                <span class="label">Raw</span>
+                <span class="label">Objects</span>
                 <span class="value">{{ rawCount }}</span>
             </div>
         </div>
@@ -342,8 +287,8 @@ onMounted(() => {
             <input v-model="peopleThreshold" type="number" />
           </label>
           <label>
-            <span>最小人脸比例 (%)</span>
-            <input v-model="minFaceRatio" type="number" />
+            <span>置信度 (%)</span>
+            <input v-model="minScore" type="number" />
           </label>
         </div>
         

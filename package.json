@@ -20,6 +20,8 @@
     "wait-on": "^9.0.3"
   },
   "dependencies": {
+    "@tensorflow-models/coco-ssd": "^2.2.3",
+    "@tensorflow/tfjs": "^4.22.0",
     "vue": "^3.3.0"
   }
 }
