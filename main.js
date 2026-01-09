@@ -15,9 +15,33 @@ function createMainWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       enableRemoteModule: false,
-      webviewTag: true
+      webviewTag: true,
+      // 允许访问媒体设备（摄像头、麦克风）
+      allowRunningInsecureContent: false,
+      experimentalFeatures: false
     }
   });
+  
+  // 在生产环境中，确保权限请求正常工作
+  if (app.isPackaged) {
+    // 监听权限请求
+    mainWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+      // 允许摄像头和麦克风权限
+      if (permission === 'media' || permission === 'camera' || permission === 'microphone') {
+        callback(true);
+      } else {
+        callback(false);
+      }
+    });
+    
+    // 监听权限检查结果
+    mainWindow.webContents.session.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+      if (permission === 'media' || permission === 'camera' || permission === 'microphone') {
+        return true;
+      }
+      return false;
+    });
+  }
 
   if (process.env.NODE_ENV === 'development') {
     mainWindow.loadURL('http://localhost:5173');

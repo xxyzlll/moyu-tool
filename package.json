@@ -21,7 +21,16 @@
       "output": "dist"
     },
     "mac": {
-      "target": "dmg"
+      "target": "dmg",
+      "category": "public.app-category.utilities",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSCameraUsageDescription": "此应用需要使用摄像头来检测画面中的人数",
+        "NSMicrophoneUsageDescription": "此应用可能需要使用麦克风（虽然当前未使用）"
+      }
     }
   },
   "author": "",

@@ -5,7 +5,7 @@ import * as cocoSsd from '@tensorflow-models/coco-ssd'
 
 // 响应式数据
 const interval = ref(500)
-const peopleThreshold = ref(1)
+const peopleThreshold = ref(2)
 const minScore = ref(50) // 置信度阈值
 const status = ref('状态：未启动')
 const peopleCount = ref(0)
@@ -170,7 +170,7 @@ async function detectLoop() {
     peopleCount.value = persons.length  // 仅人
     
     // 判定逻辑
-    const threshold = parseInt(peopleThreshold.value) || 1
+    const threshold = parseInt(peopleThreshold.value) || 2
     const danger = persons.length >= threshold
 
     if (danger) {
@@ -292,7 +292,7 @@ onUnmounted(() => {
         <div class="people-info">
             <div class="stat-item">
                 <span class="label">检测人数</span>
-                <span class="value" :class="{ danger: peopleCount >= (parseInt(peopleThreshold) || 1) }">{{ peopleCount }}</span>
+                <span class="value" :class="{ danger: peopleCount >= (parseInt(peopleThreshold) || 2) }">{{ peopleCount }}</span>
             </div>
             <div class="stat-item">
                 <span class="label">Objects</span>
