@@ -3,7 +3,7 @@ import { ref, onMounted } from 'vue'
 
 // 响应式数据
 const interval = ref(500)
-const peopleThreshold = ref(1)
+const peopleThreshold = ref(2)
 const minFaceRatio = ref(8)
 const status = ref('状态：未启动')
 const peopleCount = ref(0)
@@ -183,7 +183,11 @@ async function detectLoop() {
     rawCount.value = detections.length
     peopleCount.value = validFaces.length
     
-    const danger = validFaces.length > 0
+    // 如果设置阈值为1，意味着检测到1个人就危险（通常用于无人值守或者不能有任何人的情况）
+    // 如果设置阈值为2，意味着检测到2个人才危险（通常用于自己一直在画面中，多出一个人时报警）
+    // 所以逻辑应该是：检测人数 >= 阈值
+    const threshold = parseInt(peopleThreshold.value) || 1
+    const danger = validFaces.length >= threshold
 
     if (danger) {
       consecutiveCount++
@@ -318,7 +322,7 @@ onMounted(() => {
         <div class="people-info">
             <div class="stat-item">
                 <span class="label">检测人数</span>
-                <span class="value" :class="{ danger: peopleCount > 0 }">{{ peopleCount }}</span>
+                <span class="value" :class="{ danger: peopleCount >= (parseInt(peopleThreshold) || 1) }">{{ peopleCount }}</span>
             </div>
             <div class="stat-item">
                 <span class="label">Raw</span>
